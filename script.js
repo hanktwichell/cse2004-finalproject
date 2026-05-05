@@ -38,6 +38,8 @@ const TEAM_COLOURS = {
   'Haas F1 Team': '#b6babd',
   'Alfa Romeo': '#c92d4b',
   'Sauber': '#52e252',
+  'Kick Sauber': '#52e252',
+  'Racing Bulls': '#6692ff',
 };
 
 const DRIVER_COLOURS = [
@@ -51,11 +53,12 @@ const DRIVER_COLOURS = [
 async function fetchF1(endpoint, params = {}) {
   const url = new URL(BASE + endpoint);
   Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== null) url.searchParams.set(k, v);
+    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
   });
   const res = await fetch(url.toString());
   if (!res.ok) throw new Error(`API ${res.status}: ${endpoint}`);
-  return res.json();
+  const data = await res.json();
+  return data;
 }
 
 function fmtTime(seconds) {
@@ -68,6 +71,7 @@ function fmtTime(seconds) {
 function driverColour(driverNum) {
   const d = state.drivers.find(x => x.driver_number == driverNum);
   if (d && d.team_colour) return '#' + d.team_colour.replace('#', '');
+  if (d && d._colour) return d._colour;
   const idx = state.drivers.findIndex(x => x.driver_number == driverNum);
   return DRIVER_COLOURS[idx >= 0 ? idx % DRIVER_COLOURS.length : 0];
 }
@@ -127,7 +131,14 @@ async function onYearChange() {
   setStatus('homeStatus', loading('Fetching events…'));
   try {
     const meetings = await fetchF1('/meetings', { year });
+    if (!meetings || meetings.length === 0) {
+      evtSel.innerHTML = '<option value="">No events found</option>';
+      setStatus('homeStatus', `No events found for ${year}. The season may not have started yet.`);
+      return;
+    }
     evtSel.innerHTML = '<option value="">Select event…</option>';
+    // Sort by date ascending
+    meetings.sort((a, b) => new Date(a.date_start) - new Date(b.date_start));
     meetings.forEach(m => {
       const opt = document.createElement('option');
       opt.value = m.meeting_key;
@@ -137,9 +148,10 @@ async function onYearChange() {
       evtSel.appendChild(opt);
     });
     evtSel.disabled = false;
-    setStatus('homeStatus', `${meetings.length} events found.`);
+    setStatus('homeStatus', `${meetings.length} events found for ${year}.`);
   } catch(e) {
-    setStatus('homeStatus', `Error: ${e.message}`);
+    evtSel.innerHTML = '<option value="">Error loading events</option>';
+    setStatus('homeStatus', `<span style="color:var(--red)">Error: ${e.message}</span>`);
   }
 }
 
@@ -153,18 +165,33 @@ async function onEventChange() {
   setStatus('homeStatus', loading('Fetching sessions…'));
   try {
     const sessions = await fetchF1('/sessions', { meeting_key: meetingKey });
+    if (!sessions || sessions.length === 0) {
+      ssnSel.innerHTML = '<option value="">No sessions found</option>';
+      setStatus('homeStatus', 'No sessions found for this event.');
+      return;
+    }
     ssnSel.innerHTML = '<option value="">Select session…</option>';
+    // Preferred order for session types
+    const ORDER = ['Practice 1','Practice 2','Practice 3','Sprint Qualifying','Sprint','Qualifying','Race'];
+    sessions.sort((a, b) => {
+      const ia = ORDER.indexOf(a.session_name);
+      const ib = ORDER.indexOf(b.session_name);
+      if (ia !== -1 && ib !== -1) return ia - ib;
+      return new Date(a.date_start) - new Date(b.date_start);
+    });
     sessions.forEach(s => {
       const opt = document.createElement('option');
       opt.value = s.session_key;
-      opt.textContent = s.session_name;
+      const dateStr = s.date_start ? ` (${s.date_start.split('T')[0]})` : '';
+      opt.textContent = s.session_name + dateStr;
       ssnSel.appendChild(opt);
     });
     ssnSel.disabled = false;
     ssnSel.onchange = () => { document.getElementById('btnLoad').disabled = !ssnSel.value; };
     setStatus('homeStatus', `${sessions.length} sessions found.`);
   } catch(e) {
-    setStatus('homeStatus', `Error: ${e.message}`);
+    ssnSel.innerHTML = '<option value="">Error loading sessions</option>';
+    setStatus('homeStatus', `<span style="color:var(--red)">Error: ${e.message}</span>`);
   }
 }
 
@@ -192,6 +219,9 @@ async function loadSession() {
 
     setStatus('homeStatus', loading('Fetching drivers…'));
     const drivers = await fetchF1('/drivers', { session_key: sessionKey });
+    if (!drivers || drivers.length === 0) {
+      throw new Error('No driver data found. This session may not have data available yet.');
+    }
     state.drivers = drivers.map((d, i) => ({
       ...d,
       _colour: d.team_colour
@@ -200,17 +230,28 @@ async function loadSession() {
     }));
 
     setStatus('homeStatus', loading('Fetching all laps…'));
-    const allLaps = await fetchF1('/laps', { session_key: sessionKey });
+    let allLaps = [];
+    try {
+      allLaps = await fetchF1('/laps', { session_key: sessionKey });
+    } catch(e) {
+      showToast('Could not load lap data — some features may be limited');
+    }
+
     state.drivers.forEach(d => {
-      state.laps[d.driver_number] = allLaps
+      state.laps[d.driver_number] = (allLaps || [])
         .filter(l => l.driver_number == d.driver_number)
         .sort((a, b) => a.lap_number - b.lap_number);
     });
 
     setStatus('homeStatus', loading('Fetching stints…'));
-    const allStints = await fetchF1('/stints', { session_key: sessionKey });
+    let allStints = [];
+    try {
+      allStints = await fetchF1('/stints', { session_key: sessionKey });
+    } catch(e) {
+      showToast('Could not load stint data');
+    }
     state.drivers.forEach(d => {
-      state.stints[d.driver_number] = allStints.filter(s => s.driver_number == d.driver_number);
+      state.stints[d.driver_number] = (allStints || []).filter(s => s.driver_number == d.driver_number);
     });
 
     // Update session badge
@@ -232,11 +273,16 @@ async function loadSession() {
     if (state.drivers.length >= 2) {
       state.compareDrivers = [state.drivers[0].driver_number, state.drivers[1].driver_number];
       state.stintDrivers   = [state.drivers[0].driver_number, state.drivers[1].driver_number];
+    } else if (state.drivers.length === 1) {
+      state.compareDrivers = [state.drivers[0].driver_number];
+      state.stintDrivers   = [state.drivers[0].driver_number];
     }
 
-    setStatus('homeStatus', `✓ Loaded ${state.drivers.length} drivers, ${allLaps.length} laps.`);
+    const totalLaps = allLaps ? allLaps.length : 0;
+    setStatus('homeStatus', `✓ Loaded ${state.drivers.length} drivers, ${totalLaps} laps.`);
+    document.getElementById('btnLoad').disabled = false;
   } catch(e) {
-    setStatus('homeStatus', `Error: ${e.message}`);
+    setStatus('homeStatus', `<span style="color:var(--red)">Error: ${e.message}</span>`);
     document.getElementById('btnLoad').disabled = false;
   }
 }
@@ -337,7 +383,7 @@ function renderCompare() {
     const points = laps.map(l => ({
       x: l.lap_number,
       y: l.lap_duration || null,
-    })).filter(p => p.y && p.y < 300); // filter out safety car laps > 5min
+    })).filter(p => p.y && p.y < 300);
 
     datasets.push({
       label: d.name_acronym,
@@ -353,12 +399,17 @@ function renderCompare() {
 
     // track fastest
     const validLaps = laps.filter(l => l.lap_duration && l.lap_duration < 300);
-    const fastest = validLaps.sort((a,b) => a.lap_duration - b.lap_duration)[0];
+    const fastest = [...validLaps].sort((a,b) => a.lap_duration - b.lap_duration)[0];
     if (fastest && (!allFastestLap || fastest.lap_duration < allFastestLap.lap_duration)) {
       allFastestLap = fastest;
       allFastestDriver = d;
     }
   });
+
+  if (datasets.every(ds => ds.data.length === 0)) {
+    showToast('No lap data available for this selection');
+    return;
+  }
 
   // Metrics
   if (allFastestLap) {
@@ -402,7 +453,7 @@ function renderCompare() {
           grid: { color: 'rgba(255,255,255,0.04)' },
         },
         y: {
-          title: { display: true, text: 'Lap Time (s)', color: '#5a5a68', font: { size: 10 } },
+          title: { display: true, text: 'Lap Time', color: '#5a5a68', font: { size: 10 } },
           ticks: {
             color: '#5a5a68', font: { size: 10, family: "'Space Mono', monospace" },
             callback: v => fmtTime(v),
@@ -448,7 +499,7 @@ function renderLapTable(lapFrom, lapTo, showPit) {
   let globalBest = Infinity;
   state.compareDrivers.forEach(num => {
     (state.laps[num] || []).forEach(l => {
-      if (l.lap_duration && l.lap_duration < globalBest) globalBest = l.lap_duration;
+      if (l.lap_duration && l.lap_duration < globalBest && l.lap_duration < 300) globalBest = l.lap_duration;
     });
   });
 
@@ -478,7 +529,7 @@ function renderLapTable(lapFrom, lapTo, showPit) {
 
     html += `<tr class="${isPit ? 'pit-row' : ''}"><td class="lap-num">${lapNum}${isPit ? ' 🔧' : ''}</td>`;
     lapDatas.forEach(l => {
-      const isBest = l && Math.abs(l.lap_duration - globalBest) < 0.001;
+      const isBest = l && l.lap_duration && Math.abs(l.lap_duration - globalBest) < 0.001;
       html += `<td class="${isBest ? 'lap-best' : ''}">${l && l.lap_duration ? fmtTime(l.lap_duration) : '—'}</td>`;
     });
     if (state.compareDrivers.length >= 2 && lapDatas[0] && lapDatas[1] && lapDatas[0].lap_duration && lapDatas[1].lap_duration) {
@@ -502,7 +553,10 @@ function renderLapTable(lapFrom, lapTo, showPit) {
 function populateTelemSelects() {
   ['telemLapA', 'telemLapB'].forEach(id => {
     const sel = document.getElementById(id);
+    // Preserve existing sim lap options
+    const simGroups = Array.from(sel.querySelectorAll('optgroup'));
     sel.innerHTML = '<option value="">Select driver/lap…</option>';
+
     state.drivers.forEach(d => {
       const laps = (state.laps[d.driver_number] || [])
         .filter(l => l.lap_duration && !l.is_pit_out_lap)
@@ -518,6 +572,9 @@ function populateTelemSelects() {
       });
       sel.appendChild(grp);
     });
+
+    // Re-append sim groups
+    simGroups.forEach(g => sel.appendChild(g));
   });
 }
 
@@ -525,38 +582,115 @@ async function loadTelemLap(slot) {
   // no-op — data loaded on "Render Telemetry"
 }
 
+/*
+ * OpenF1 /car_data does NOT support lap_number filtering directly.
+ * Instead, we need to:
+ *  1. Find the lap object (which has date_start)
+ *  2. Find the NEXT lap's date_start as the end time
+ *  3. Fetch car_data between those timestamps
+ */
+async function fetchCarDataForLap(driverNum, lapNum) {
+  const driverLaps = state.laps[driverNum] || [];
+  const lapObj = driverLaps.find(l => l.lap_number === lapNum);
+  if (!lapObj) throw new Error(`Lap ${lapNum} not found for driver ${driverNum}`);
+
+  const dateStart = lapObj.date_start;
+  if (!dateStart) throw new Error(`No start time for lap ${lapNum}`);
+
+  // Try to get duration-based end time, or use the next lap's start
+  let dateEnd;
+  if (lapObj.lap_duration) {
+    const endMs = new Date(dateStart).getTime() + lapObj.lap_duration * 1000 + 1000;
+    dateEnd = new Date(endMs).toISOString();
+  } else {
+    const nextLap = driverLaps.find(l => l.lap_number === lapNum + 1);
+    if (nextLap && nextLap.date_start) {
+      dateEnd = nextLap.date_start;
+    }
+  }
+
+  const params = {
+    session_key: state.sessionKey,
+    driver_number: driverNum,
+  };
+  // OpenF1 supports date filtering via query string operators
+  const url = new URL(BASE + '/car_data');
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  url.searchParams.set('date>', dateStart);
+  if (dateEnd) url.searchParams.set('date<', dateEnd);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`API ${res.status}: /car_data`);
+  const data = await res.json();
+  if (!data || data.length === 0) {
+    throw new Error(`No car data returned for ${driverAbbr(driverNum)} lap ${lapNum}. Telemetry may not be available for this session.`);
+  }
+  return data;
+}
+
+
 async function renderTelemetry() {
   const valA = document.getElementById('telemLapA').value;
   const valB = document.getElementById('telemLapB').value;
+
   if (!valA || !valB) { showToast('Select Lap A and Lap B'); return; }
 
   setStatus('telemStatus', loading('Fetching car data…'));
   document.getElementById('telemPlaceholder').style.display = 'none';
 
-  const [dnA, lnA] = valA.split('_').map(Number);
-  const [dnB, lnB] = valB.split('_').map(Number);
+  // Handle sim laps
+  const isSimA = valA.startsWith('sim_');
+  const isSimB = valB.startsWith('sim_');
+
+  // Parse driver/lap numbers (only for real laps)
+  const parseVal = (val) => {
+    const parts = val.split('_').map(Number);
+    return { driverNum: parts[0], lapNum: parts[1] };
+  };
 
   try {
-    const [carA, carB] = await Promise.all([
-      fetchF1('/car_data', { session_key: state.sessionKey, driver_number: dnA, lap_number: lnA }),
-      fetchF1('/car_data', { session_key: state.sessionKey, driver_number: dnB, lap_number: lnB }),
-    ]);
+    let carA, carB;
 
-    // Downsample to ~200 points each for performance
+    if (isSimA) {
+      const simIdx = parseInt(valA.split('_')[1]);
+      const sim = state.simLaps[simIdx];
+      carA = sim.data;
+      state.telemA = { driverNum: 'SIM', lapNum: 0, data: carA, label: sim.label };
+    } else {
+      const { driverNum, lapNum } = parseVal(valA);
+      setStatus('telemStatus', loading(`Fetching ${driverAbbr(driverNum)} Lap ${lapNum}…`));
+      carA = await fetchCarDataForLap(driverNum, lapNum);
+      state.telemA = { driverNum, lapNum, data: carA };
+    }
+
+    if (isSimB) {
+      const simIdx = parseInt(valB.split('_')[1]);
+      const sim = state.simLaps[simIdx];
+      carB = sim.data;
+      state.telemB = { driverNum: 'SIM', lapNum: 0, data: carB, label: sim.label };
+    } else {
+      const { driverNum, lapNum } = parseVal(valB);
+      setStatus('telemStatus', loading(`Fetching ${driverAbbr(driverNum)} Lap ${lapNum}…`));
+      carB = await fetchCarDataForLap(driverNum, lapNum);
+      state.telemB = { driverNum, lapNum, data: carB };
+    }
+
+    // Downsample to ~250 points each for performance
     const sample = (arr, n) => {
       if (arr.length <= n) return arr;
       const step = Math.ceil(arr.length / n);
       return arr.filter((_, i) => i % step === 0);
     };
 
-    state.telemA = { driverNum: dnA, lapNum: lnA, data: sample(carA, 200) };
-    state.telemB = { driverNum: dnB, lapNum: lnB, data: sample(carB, 200) };
+    state.telemA.data = sample(state.telemA.data, 250);
+    state.telemB.data = sample(state.telemB.data, 250);
 
     buildTelemCharts();
-    setStatus('telemStatus', '✓ Loaded');
+    setStatus('telemStatus', `✓ Loaded — A: ${state.telemA.data.length} pts, B: ${state.telemB.data.length} pts`);
   } catch(e) {
-    setStatus('telemStatus', `Error: ${e.message}`);
-    showToast(`Telemetry error: ${e.message}`);
+    setStatus('telemStatus', `<span style="color:var(--red)">Error: ${e.message}</span>`);
+    showToast(`Telemetry error: ${e.message}`, 4000);
+    document.getElementById('telemPlaceholder').style.display = 'flex';
   }
 }
 
@@ -577,14 +711,18 @@ function buildTelemCharts() {
   ];
 
   const dA = state.telemA, dB = state.telemB;
-  const colA = driverColour(dA.driverNum);
-  const colB = driverColour(dB.driverNum);
-  const abbrA = driverAbbr(dA.driverNum);
-  const abbrB = driverAbbr(dB.driverNum);
+  const colA = dA.driverNum === 'SIM' ? '#e63946' : driverColour(dA.driverNum);
+  const colB = dB.driverNum === 'SIM' ? '#facc15' : driverColour(dB.driverNum);
+  const abbrA = dA.label || (dA.driverNum === 'SIM' ? 'SIM' : driverAbbr(dA.driverNum));
+  const abbrB = dB.label || (dB.driverNum === 'SIM' ? 'SIM' : driverAbbr(dB.driverNum));
+  const labelA = dA.driverNum === 'SIM' ? abbrA : `${abbrA} · Lap ${dA.lapNum}`;
+  const labelB = dB.driverNum === 'SIM' ? abbrB : `${abbrB} · Lap ${dB.lapNum}`;
 
-  // Normalise time to 0-based
+  // Normalise time to 0-based seconds
   const normalise = (data) => {
     if (!data.length) return [];
+    // Real F1 data has ISO date strings; sim data has _t already
+    if (data[0]._t !== undefined) return data;
     const t0 = new Date(data[0].date).getTime();
     return data.map(d => ({ ...d, _t: (new Date(d.date).getTime() - t0) / 1000 }));
   };
@@ -594,20 +732,30 @@ function buildTelemCharts() {
 
   // Delta bar summary
   const avgField = (data, field) => {
-    const vals = data.map(d => d[field]).filter(v => v != null);
-    return vals.reduce((s, v) => s + v, 0) / (vals.length || 1);
+    const vals = data.map(d => d[field]).filter(v => v != null && !isNaN(v));
+    return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
   };
 
-  const deltaSpeed = avgField(ndA, 'speed') - avgField(ndB, 'speed');
-  const deltaThrottle = avgField(ndA, 'throttle') - avgField(ndB, 'throttle');
+  const avgSpeedA = avgField(ndA, 'speed');
+  const avgSpeedB = avgField(ndB, 'speed');
+  const avgThrottleA = avgField(ndA, 'throttle');
+  const avgThrottleB = avgField(ndB, 'throttle');
 
-  const lapA = (state.laps[dA.driverNum] || []).find(l => l.lap_number === dA.lapNum);
-  const lapB = (state.laps[dB.driverNum] || []).find(l => l.lap_number === dB.lapNum);
-  const lapDelta = lapA && lapB ? lapA.lap_duration - lapB.lap_duration : null;
+  const lapA = dA.driverNum !== 'SIM' ? (state.laps[dA.driverNum] || []).find(l => l.lap_number === dA.lapNum) : null;
+  const lapB = dB.driverNum !== 'SIM' ? (state.laps[dB.driverNum] || []).find(l => l.lap_number === dB.lapNum) : null;
+  const lapDelta = lapA && lapB && lapA.lap_duration && lapB.lap_duration
+    ? lapA.lap_duration - lapB.lap_duration
+    : null;
 
   document.getElementById('telemDeltaBar').style.display = 'flex';
-  document.getElementById('dtSpeed').textContent = (deltaSpeed >= 0 ? '+' : '') + deltaSpeed.toFixed(1) + ' km/h';
-  document.getElementById('dtThrottle').textContent = (deltaThrottle >= 0 ? '+' : '') + deltaThrottle.toFixed(1) + '%';
+  document.getElementById('dtSpeed').textContent =
+    avgSpeedA != null && avgSpeedB != null
+      ? (avgSpeedA - avgSpeedB >= 0 ? '+' : '') + (avgSpeedA - avgSpeedB).toFixed(1) + ' km/h'
+      : '—';
+  document.getElementById('dtThrottle').textContent =
+    avgThrottleA != null && avgThrottleB != null
+      ? (avgThrottleA - avgThrottleB >= 0 ? '+' : '') + (avgThrottleA - avgThrottleB).toFixed(1) + '%'
+      : '—';
   document.getElementById('dtBrake').textContent = '—';
   document.getElementById('dtLap').textContent = lapDelta !== null
     ? (lapDelta > 0 ? '+' : '') + lapDelta.toFixed(3) + 's'
@@ -616,13 +764,18 @@ function buildTelemCharts() {
   channels.forEach(ch => {
     if (!document.getElementById(ch.chk)?.checked) return;
 
+    // Check if data has this channel
+    const hasDataA = ndA.some(d => d[ch.key] != null);
+    const hasDataB = ndB.some(d => d[ch.key] != null);
+    if (!hasDataA && !hasDataB) return;
+
     const block = document.createElement('div');
     block.className = 'telem-chart-block';
     block.innerHTML = `
       <div class="telem-chart-label">${ch.label}</div>
       <div class="chart-legend">
-        <div class="legend-item"><div class="legend-line" style="background:${colA}"></div>${abbrA} · Lap ${dA.lapNum}</div>
-        <div class="legend-item"><div class="legend-line dashed" style="color:${colB}"></div>${abbrB} · Lap ${dB.lapNum}</div>
+        <div class="legend-item"><div class="legend-line" style="background:${colA}"></div>${labelA}</div>
+        <div class="legend-item"><div class="legend-line dashed" style="color:${colB}"></div>${labelB}</div>
       </div>
       <div class="telem-canvas-wrap"><canvas id="tch_${ch.key}"></canvas></div>`;
     container.appendChild(block);
@@ -635,8 +788,8 @@ function buildTelemCharts() {
       type: 'line',
       data: {
         datasets: [
-          { label: abbrA, data: dsA, borderColor: colA, borderWidth: 1.5, pointRadius: 0, tension: 0.2, spanGaps: true },
-          { label: abbrB, data: dsB, borderColor: colB, borderWidth: 1.5, pointRadius: 0, tension: 0.2, spanGaps: true,
+          { label: labelA, data: dsA, borderColor: colA, borderWidth: 1.5, pointRadius: 0, tension: 0.15, spanGaps: true },
+          { label: labelB, data: dsB, borderColor: colB, borderWidth: 1.5, pointRadius: 0, tension: 0.15, spanGaps: true,
             borderDash: [4, 2] },
         ]
       },
@@ -646,6 +799,7 @@ function buildTelemCharts() {
         scales: {
           x: {
             type: 'linear',
+            title: { display: true, text: 'Time (s)', color: '#4e4e5e', font: { size: 9 } },
             ticks: { color: '#4e4e5e', font: { size: 9 }, maxTicksLimit: 8 },
             grid: { color: 'rgba(255,255,255,0.03)' },
           },
@@ -666,6 +820,10 @@ function buildTelemCharts() {
       }
     });
   });
+
+  if (Object.keys(state.telemCharts).length === 0) {
+    container.innerHTML = '<div class="telem-placeholder"><div class="placeholder-icon">⚠</div><div>No channel data available for this lap. Try another lap or check channel selections.</div></div>';
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -722,10 +880,12 @@ function renderStints() {
   });
   const maxLap = Math.max(...allLapCounts, 1);
 
+  let hasStintData = false;
   state.stintDrivers.forEach(num => {
     const d = state.drivers.find(x => x.driver_number == num);
     if (!d) return;
     const stints = state.stints[num] || [];
+    if (stints.length) hasStintData = true;
 
     const row = document.createElement('div');
     row.className = 'stint-driver-row';
@@ -734,19 +894,24 @@ function renderStints() {
     const bars = document.createElement('div');
     bars.className = 'stint-bars';
 
-    stints.forEach(s => {
-      const start = s.lap_start || 1;
-      const end   = s.lap_end   || maxLap;
-      const width = ((end - start + 1) / maxLap) * 100;
-      const compound = (s.compound || 'H').charAt(0).toUpperCase();
-      const tyreClass = { S:'tyre-S', M:'tyre-M', H:'tyre-H', I:'tyre-I', W:'tyre-W' }[compound] || 'tyre-H';
-      const bar = document.createElement('div');
-      bar.className = `stint-bar ${tyreClass}`;
-      bar.style.width = `${width}%`;
-      bar.title = `${compound} · L${start}–${end}`;
-      bar.textContent = width > 8 ? `${compound} · L${start}–${end}` : compound;
-      bars.appendChild(bar);
-    });
+    if (stints.length === 0) {
+      bars.innerHTML = '<span style="color:var(--text3);font-size:11px;padding-left:8px">No stint data</span>';
+    } else {
+      stints.forEach(s => {
+        const start = s.lap_start || 1;
+        const end   = s.lap_end   || maxLap;
+        const width = ((end - start + 1) / maxLap) * 100;
+        const compound = (s.compound || 'H').charAt(0).toUpperCase();
+        const tyreClass = { S:'tyre-S', M:'tyre-M', H:'tyre-H', I:'tyre-I', W:'tyre-W' }[compound] || 'tyre-H';
+        const bar = document.createElement('div');
+        bar.className = `stint-bar ${tyreClass}`;
+        bar.style.width = `${width}%`;
+        bar.title = `${compound} · L${start}–${end}`;
+        bar.textContent = width > 8 ? `${compound} · L${start}–${end}` : compound;
+        bars.appendChild(bar);
+      });
+    }
+
     row.appendChild(bars);
     strategy.appendChild(row);
   });
@@ -774,7 +939,6 @@ function renderStints() {
     });
   });
 
-  // Add pit annotations via vertical lines plugin workaround (custom dataset)
   const ctx2 = document.getElementById('stintPaceChart').getContext('2d');
   state.stintChart = new Chart(ctx2, {
     type: 'line',
@@ -844,11 +1008,15 @@ function openImportModal() {
 }
 
 function closeImportModal(e) {
-  if (e && e.target !== document.getElementById('importModal') && e.target.id !== 'importModal') return;
+  // If called from backdrop click, only close if the backdrop itself was clicked
+  if (e && e.type === 'click' && e.target.id !== 'importModal') return;
   document.getElementById('importModal').style.display = 'none';
   state.pendingFile = null;
-  document.getElementById('importResult').style.display = 'none';
+  const result = document.getElementById('importResult');
+  result.style.display = 'none';
+  result.style.color = '';
   document.getElementById('btnImportDo').disabled = true;
+  document.querySelector('.drop-text').textContent = 'Drop file here or click to browse';
 }
 
 function selectPlatform(p) {
@@ -872,6 +1040,7 @@ function processImportFile(file) {
   state.pendingFile = file;
   const result = document.getElementById('importResult');
   result.style.display = 'block';
+  result.style.color = '';
   result.textContent = `✓ File ready: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
   document.getElementById('btnImportDo').disabled = false;
   document.querySelector('.drop-text').textContent = file.name;
@@ -884,28 +1053,33 @@ function doImport() {
   reader.onload = (e) => {
     try {
       const text = e.target.result;
-      const lines = text.split('\n').filter(Boolean);
-      // Expect CSV: time,speed,throttle,brake,gear,drs
-      const header = lines[0].toLowerCase().split(',');
-      const timeIdx     = header.findIndex(h => h.includes('time') || h.includes('t'));
+      const lines = text.split('\n').filter(l => l.trim());
+      if (lines.length < 2) throw new Error('File appears empty or has no data rows.');
+
+      // Expect CSV: time,speed,throttle,brake,gear (and optionally drs)
+      const header = lines[0].toLowerCase().split(',').map(h => h.trim());
+      const timeIdx     = header.findIndex(h => h.includes('time') || h === 't');
       const speedIdx    = header.findIndex(h => h.includes('speed'));
       const throttleIdx = header.findIndex(h => h.includes('throttle'));
       const brakeIdx    = header.findIndex(h => h.includes('brake'));
       const gearIdx     = header.findIndex(h => h.includes('gear'));
+      const drsIdx      = header.findIndex(h => h.includes('drs'));
+
+      if (timeIdx === -1) throw new Error('Could not find a time column. Expected headers: time, speed, throttle, brake, gear');
 
       const data = lines.slice(1).map(line => {
         const cols = line.split(',');
         return {
           _t:       parseFloat(cols[timeIdx] ?? 0),
-          speed:    parseFloat(cols[speedIdx] ?? 0),
-          throttle: parseFloat(cols[throttleIdx] ?? 0),
-          brake:    parseFloat(cols[brakeIdx] ?? 0),
-          n_gear:   parseFloat(cols[gearIdx] ?? 0),
-          drs:      0,
+          speed:    speedIdx >= 0 ? parseFloat(cols[speedIdx] ?? 0) : null,
+          throttle: throttleIdx >= 0 ? parseFloat(cols[throttleIdx] ?? 0) : null,
+          brake:    brakeIdx >= 0 ? parseFloat(cols[brakeIdx] ?? 0) : null,
+          n_gear:   gearIdx >= 0 ? parseFloat(cols[gearIdx] ?? 0) : null,
+          drs:      drsIdx >= 0 ? parseFloat(cols[drsIdx] ?? 0) : 0,
         };
       }).filter(d => !isNaN(d._t));
 
-      if (!data.length) throw new Error('No valid rows found. Expected CSV with headers: time, speed, throttle, brake, gear');
+      if (!data.length) throw new Error('No valid rows found. Check the file format.');
 
       // Estimate lap time from time column
       const lapTime = data[data.length - 1]._t - data[0]._t;
@@ -925,8 +1099,9 @@ function doImport() {
       // Inject into telemetry driver selects as a virtual entry
       injectSimLapIntoTelemetry(state.simLaps[state.simLaps.length - 1]);
     } catch(err) {
-      document.getElementById('importResult').textContent = `Error: ${err.message}`;
-      document.getElementById('importResult').style.color = '#e63946';
+      const result = document.getElementById('importResult');
+      result.textContent = `Error: ${err.message}`;
+      result.style.color = '#e63946';
     }
   };
   reader.readAsText(file);
