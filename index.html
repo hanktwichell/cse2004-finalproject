@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenF1 Explorer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- NAV -->
+    <nav class="nav">
+      <div class="nav-logo" onclick="showView('home')">
+        <svg class="logo-mark" viewBox="0 0 28 28" fill="none">
+          <circle cx="14" cy="14" r="13" stroke="#e63946" stroke-width="1.5"/>
+          <circle cx="14" cy="14" r="4" fill="#e63946"/>
+          <line x1="14" y1="1" x2="14" y2="8" stroke="#e63946" stroke-width="1.5"/>
+          <line x1="14" y1="20" x2="14" y2="27" stroke="#e63946" stroke-width="1.5"/>
+          <line x1="1" y1="14" x2="8" y2="14" stroke="#e63946" stroke-width="1.5"/>
+          <line x1="20" y1="14" x2="27" y2="14" stroke="#e63946" stroke-width="1.5"/>
+        </svg>
+        <span class="nav-title">OpenF1 Explorer</span>
+      </div>
+      <div class="nav-links" id="navLinks">
+        <button class="nav-btn" data-view="home">Sessions</button>
+        <button class="nav-btn" data-view="compare">Lap Compare</button>
+        <button class="nav-btn" data-view="telemetry">Telemetry</button>
+        <button class="nav-btn" data-view="stints">Stints</button>
+      </div>
+      <div class="nav-right">
+        <div class="session-badge" id="sessionBadge" style="display:none">
+          <span id="sessionBadgeText">—</span>
+        </div>
+        <button class="btn-import" onclick="openImportModal()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Import Sim
+        </button>
+      </div>
+    </nav>
+
+    <!-- VIEWS -->
+    <main class="main" id="mainContent">
+
+      <!-- ===================== HOME / SESSION PICKER ===================== -->
+      <div id="view-home" class="view active">
+        <div class="home-header">
+          <h1 class="home-title">Select a Session</h1>
+          <p class="home-sub">Choose a season, event, and session to begin exploring F1 data.</p>
+        </div>
+        <div class="filter-bar">
+          <div class="filter-group">
+            <label class="filter-label">Season</label>
+            <select class="filter-select" id="filterYear" onchange="onYearChange()">
+              <option value="2024">2024</option>
+              <option value="2023">2023</option>
+              <option value="2022">2022</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label">Event</label>
+            <select class="filter-select" id="filterEvent" onchange="onEventChange()" disabled>
+              <option value="">Loading events…</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label">Session Type</label>
+            <select class="filter-select" id="filterSession" disabled>
+              <option value="">Select event first</option>
+            </select>
+          </div>
+          <button class="btn-primary" id="btnLoad" onclick="loadSession()" disabled>
+            Load Session →
+          </button>
+        </div>
+        <div id="homeStatus" class="home-status"></div>
+        <div id="sessionInfo" class="session-info-card" style="display:none">
+          <div class="sic-left">
+            <div class="sic-title" id="sicTitle">—</div>
+            <div class="sic-meta" id="sicMeta">—</div>
+          </div>
+          <div class="sic-actions">
+            <button class="btn-outline" onclick="showView('compare')">Lap Compare</button>
+            <button class="btn-outline" onclick="showView('stints')">Stints</button>
+            <button class="btn-primary" onclick="showView('telemetry')">Telemetry →</button>
+          </div>
+        </div>
+        <div id="driverGrid" class="driver-grid" style="display:none"></div>
+      </div>
+
+      <!-- ===================== LAP COMPARE ===================== -->
+      <div id="view-compare" class="view">
+        <div class="split-layout">
+          <aside class="sidebar">
+            <div class="sidebar-section">
+              <div class="sb-label">Session</div>
+              <div class="sb-session-name" id="sbSessionName">No session loaded</div>
+            </div>
+            <div class="sidebar-section">
+              <div class="sb-label">Drivers</div>
+              <div id="compareDriverList" class="driver-list"></div>
+              <div class="driver-search-wrap">
+                <select id="compareDriverAdd" class="filter-select small">
+                  <option value="">Add driver…</option>
+                </select>
+                <button class="btn-small" onclick="addCompareDriver()">+</button>
+              </div>
+            </div>
+            <div class="sidebar-section">
+              <div class="sb-label">Lap Range</div>
+              <div class="range-row">
+                <input type="number" class="range-input" id="lapFrom" value="1" min="1" />
+                <span class="range-sep">to</span>
+                <input type="number" class="range-input" id="lapTo" value="60" min="1" />
+              </div>
+            </div>
+            <div class="sidebar-section">
+              <div class="sb-label">Display</div>
+              <label class="check-label"><input type="checkbox" id="chkPitLaps" checked /> Show pit laps</label>
+              <label class="check-label"><input type="checkbox" id="chkSCLaps" /> Highlight SC/VSC</label>
+            </div>
+            <button class="btn-primary full" onclick="renderCompare()">Update Chart</button>
+          </aside>
+          <div class="panel-content">
+            <div class="metrics-row" id="compareMetrics">
+              <div class="metric-card"><div class="metric-label">Fastest Lap</div><div class="metric-value" id="mFastest">—</div><div class="metric-sub" id="mFastestSub">—</div></div>
+              <div class="metric-card"><div class="metric-label">Avg Pace Gap</div><div class="metric-value" id="mGap">—</div><div class="metric-sub" id="mGapSub">—</div></div>
+              <div class="metric-card"><div class="metric-label">Total Laps</div><div class="metric-value" id="mLaps">—</div><div class="metric-sub" id="mLapsSub">—</div></div>
+            </div>
+            <div class="chart-section">
+              <div class="chart-title">Lap Times Over Race Distance</div>
+              <div class="chart-wrap"><canvas id="lapTimeChart"></canvas></div>
+            </div>
+            <div class="chart-section">
+              <div class="chart-title">Lap-by-Lap Table</div>
+              <div class="table-wrap" id="lapTable"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== TELEMETRY ===================== -->
+      <div id="view-telemetry" class="view">
+        <div class="split-layout">
+          <aside class="sidebar">
+            <div class="sidebar-section">
+              <div class="sb-label">Lap A</div>
+              <select class="filter-select small" id="telemLapA" onchange="loadTelemLap('A')">
+                <option value="">Select driver/lap…</option>
+              </select>
+            </div>
+            <div class="sidebar-section">
+              <div class="sb-label">Lap B</div>
+              <select class="filter-select small" id="telemLapB" onchange="loadTelemLap('B')">
+                <option value="">Select driver/lap…</option>
+              </select>
+            </div>
+            <div class="sidebar-section">
+              <div class="sb-label">Channels</div>
+              <label class="check-label"><input type="checkbox" id="chSpeed" checked /> Speed</label>
+              <label class="check-label"><input type="checkbox" id="chThrottle" checked /> Throttle</label>
+              <label class="check-label"><input type="checkbox" id="chBrake" checked /> Brake</label>
+              <label class="check-label"><input type="checkbox" id="chGear" /> Gear</label>
+              <label class="check-label"><input type="checkbox" id="chDRS" /> DRS</label>
+            </div>
+            <button class="btn-primary full" onclick="renderTelemetry()">Render Telemetry</button>
+            <div id="telemStatus" class="sb-status"></div>
+          </aside>
+          <div class="panel-content">
+            <div id="telemDeltaBar" class="delta-bar" style="display:none">
+              <div class="delta-item"><span class="delta-label">Speed Δ</span><span class="delta-val" id="dtSpeed">—</span></div>
+              <div class="delta-item"><span class="delta-label">Throttle Δ</span><span class="delta-val" id="dtThrottle">—</span></div>
+              <div class="delta-item"><span class="delta-label">Brake Δ</span><span class="delta-val" id="dtBrake">—</span></div>
+              <div class="delta-item"><span class="delta-label">Lap Δ</span><span class="delta-val" id="dtLap">—</span></div>
+            </div>
+            <div id="telemCharts" class="telem-charts">
+              <div class="telem-placeholder" id="telemPlaceholder">
+                <div class="placeholder-icon">⬡</div>
+                <div>Select two laps to overlay telemetry</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== STINTS ===================== -->
+      <div id="view-stints" class="view">
+        <div class="split-layout">
+          <aside class="sidebar">
+            <div class="sidebar-section">
+              <div class="sb-label">Session</div>
+              <div class="sb-session-name" id="sbStintSession">No session loaded</div>
+            </div>
+            <div class="sidebar-section">
+              <div class="sb-label">Drivers</div>
+              <div id="stintDriverList" class="driver-list"></div>
+              <div class="driver-search-wrap">
+                <select id="stintDriverAdd" class="filter-select small">
+                  <option value="">Add driver…</option>
+                </select>
+                <button class="btn-small" onclick="addStintDriver()">+</button>
+              </div>
+            </div>
+            <button class="btn-primary full" onclick="renderStints()">Update</button>
+          </aside>
+          <div class="panel-content">
+            <div class="chart-section">
+              <div class="chart-title">Strategy Overview</div>
+              <div id="stintStrategy" class="stint-strategy"></div>
+            </div>
+            <div class="chart-section">
+              <div class="chart-title">Stint Pace Comparison</div>
+              <div class="chart-wrap"><canvas id="stintPaceChart"></canvas></div>
+            </div>
+            <div class="metrics-row" id="stintMetrics"></div>
+          </div>
+        </div>
+      </div>
+
+    </main><!-- end main -->
+  </div><!-- end app -->
+
+  <!-- IMPORT MODAL -->
+  <div id="importModal" class="modal-overlay" style="display:none" onclick="closeImportModal(event)">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title">Import Sim Racing Data</div>
+        <button class="modal-close" onclick="closeImportModal()">✕</button>
+      </div>
+      <p class="modal-sub">Overlay your sim laps against real F1 telemetry. Parsed locally — nothing is uploaded.</p>
+      <div class="platform-row">
+        <div class="platform-card active" id="platIRacing" onclick="selectPlatform('iracing')">
+          <div class="platform-name">iRacing</div>
+          <div class="platform-ext">.csv export</div>
+        </div>
+        <div class="platform-card" id="platLMU" onclick="selectPlatform('lmu')">
+          <div class="platform-name">Le Mans Ultimate</div>
+          <div class="platform-ext">.csv / .motec</div>
+        </div>
+      </div>
+      <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()"
+           ondragover="event.preventDefault()" ondrop="handleFileDrop(event)">
+        <div class="drop-icon">↓</div>
+        <div class="drop-text">Drop file here or click to browse</div>
+        <div class="drop-sub">Parsed client-side — no upload required</div>
+        <input type="file" id="fileInput" accept=".csv,.ibt,.ldx,.motec" style="display:none" onchange="handleFileSelect(event)" />
+      </div>
+      <div id="importResult" class="import-result" style="display:none"></div>
+      <div class="modal-actions">
+        <button class="btn-outline" onclick="closeImportModal()">Cancel</button>
+        <button class="btn-primary" id="btnImportDo" onclick="doImport()" disabled>Import →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>
